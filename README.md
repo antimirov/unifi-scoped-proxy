@@ -1,4 +1,4 @@
-# UniFi Scoped Proxy Gateway 🛡️
+# UniFi Scoped Proxy 🛡️
 
 A lightweight, high-performance **zero-trust permission proxy** for the Ubiquiti UniFi Network & Protect APIs, written in Rust.
 

@@ -84,7 +84,7 @@ async fn main() {
 
     let scopes = PermissionScopes::from_env();
 
-    tracing::info!("Starting UniFi Scoped Proxy Gateway...");
+    tracing::info!("Starting UniFi Scoped Proxy...");
     tracing::info!("UniFi Base URL: {}", unifi_base_url);
     tracing::info!("Accept Invalid Certs: {}", accept_invalid_certs);
     if proxy_auth_token.is_some() {
