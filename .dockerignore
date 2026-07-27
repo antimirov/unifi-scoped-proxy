@@ -1,0 +1,15 @@
+# Ignore secret files
+.env
+
+# Ignore build directories
+target/
+
+# Ignore git repository
+.git/
+.gitignore
+
+# Ignore build scripts and documentation
+Dockerfile
+.dockerignore
+*.md
+*.pdf

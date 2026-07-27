@@ -1,0 +1,7 @@
+/target
+.env
+task_description.md
+Unifi_API_docs.zip
+*API.html
+*API_files/
+.DS_Store
