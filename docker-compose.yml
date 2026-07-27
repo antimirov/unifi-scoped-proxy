@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  unifi-scoped-proxy:
+    # Build locally or use pre-built image from GHCR:
+    # image: ghcr.io/antimirov/unifi-scoped-proxy:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: unifi-scoped-proxy
+    restart: always
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    # Or override environment variables directly:
+    # environment:
+    #   - UNIFI_BASE_URL=https://192.168.1.1
+    #   - UNIFI_API_KEY=your_master_unifi_api_key_here
+    #   - ACCEPT_INVALID_CERTS=true
+    #   - SCOPE_INFO_READ=true
+    #   - SCOPE_SITES_READ=true
+    #   - SCOPE_DEVICES_READ=true
+    #   - SCOPE_CLIENTS_READ=false
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
