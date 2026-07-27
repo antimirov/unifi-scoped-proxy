@@ -129,6 +129,13 @@ UNIFI_API_KEY="your_api_key" cargo run --release
 
 ---
 
+## Docker & CI/CD Pipeline
+
+* **Multi-Stage Dockerfile**: Uses a lightweight Alpine build stage to compile the Rust binary, producing a minimal `~4MB` runtime container.
+* **Automated Multi-Arch Releases**: The GitHub Actions workflow (`.github/workflows/docker-publish.yml`) automatically builds and publishes multi-architecture Docker images (`linux/amd64` and `linux/arm64`) to GitHub Container Registry (`ghcr.io/antimirov/unifi-scoped-proxy:latest`) on every push to `main` or new version tag.
+
+---
+
 ## License
 
 [MIT](LICENSE) © [antimirov](https://github.com/antimirov)
