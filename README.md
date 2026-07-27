@@ -77,7 +77,34 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+### Shared Docker Network (Zero Host Port Exposure)
+If running alongside an AI Agent (e.g. `hermes-agent`) or Home Assistant on the same machine/Synology, connect both containers to a shared bridge network so the proxy needs **zero exposed host ports**:
+
+```yaml
+networks:
+  agent-net:
+    driver: bridge
+
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-agent
+    networks:
+      - agent-net
+
+  unifi-scoped-proxy:
+    image: ghcr.io/antimirov/unifi-scoped-proxy:latest
+    container_name: unifi-scoped-proxy
+    networks:
+      - agent-net
+    environment:
+      - UNIFI_BASE_URL=https://192.168.1.1
+      - UNIFI_API_KEY=your_master_unifi_api_key_here
+      - ACCEPT_INVALID_CERTS=true
+      - SCOPE_DEVICES_READ=true
 ```
+* **Endpoint for AI Agent**: `http://unifi-scoped-proxy:8080/proxy/network/integration/v1/sites`
 
 ---
 
@@ -132,7 +159,9 @@ UNIFI_API_KEY="your_api_key" cargo run --release
 ## Docker & CI/CD Pipeline
 
 * **Multi-Stage Dockerfile**: Uses a lightweight Alpine build stage to compile the Rust binary, producing a minimal `~4MB` runtime container.
-* **Automated Multi-Arch Releases**: The GitHub Actions workflow (`.github/workflows/docker-publish.yml`) automatically builds and publishes multi-architecture Docker images (`linux/amd64` and `linux/arm64`) to GitHub Container Registry (`ghcr.io/antimirov/unifi-scoped-proxy:latest`) on every push to `main` or new version tag.
+* **Fast `amd64` Builds on Push**: Everyday pushes to `main` compile and update `linux/amd64` in ~45 seconds.
+* **Multi-Arch Releases (`amd64` + `arm64`)**: Creating a version release tag (e.g. `v0.1.0`) triggers a full multi-architecture build (`linux/amd64` and `linux/arm64`).
+* **Dynamic Manifest Stitching**: Pushes to `main` dynamically stitch the new `amd64` build with the active release `arm64` digest, ensuring `ghcr.io/antimirov/unifi-scoped-proxy:latest` ALWAYS resolves natively for both x86 and Apple Silicon / ARM users.
 
 ---
 
