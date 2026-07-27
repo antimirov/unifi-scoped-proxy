@@ -2,12 +2,13 @@ use dotenvy::dotenv;
 use std::env;
 use axum::{
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::any,
     Router,
 };
+use subtle::ConstantTimeEq;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Clone, Debug)]
@@ -58,6 +59,17 @@ struct AppState {
     proxy_auth_token: Option<String>,
 }
 
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("unifi_base_url", &self.unifi_base_url)
+            .field("api_key", &"[REDACTED]")
+            .field("proxy_auth_token", &self.proxy_auth_token.as_ref().map(|_| "[REDACTED]"))
+            .field("scopes", &self.scopes)
+            .finish()
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Load .env file if present
@@ -95,7 +107,9 @@ async fn main() {
     tracing::info!("Active Permission Scopes: {:?}", scopes);
 
     // Build reqwest client
-    let mut client_builder = reqwest::Client::builder();
+    let mut client_builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(30));
     if accept_invalid_certs {
         client_builder = client_builder.danger_accept_invalid_certs(true);
     }
@@ -115,6 +129,7 @@ async fn main() {
     let app = Router::new()
         .fallback(any(proxy_handler))
         .with_state(state)
+        .layer(DefaultBodyLimit::max(1024 * 1024)) // 1 MB max request body
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&listen_addr_str)
@@ -157,6 +172,7 @@ async fn proxy_handler(
     uri: Uri,
     headers: HeaderMap,
     State(state): State<AppState>,
+    body: axum::body::Bytes,
 ) -> Response {
     let path = uri.path();
 
@@ -182,7 +198,16 @@ async fn proxy_handler(
                     .and_then(|s| s.strip_prefix("Bearer "))
             });
 
-        if provided_token != Some(expected_token.as_str()) {
+        // Constant-time comparison to prevent timing side-channel attacks
+        let is_valid = provided_token
+            .map(|t| {
+                let t_bytes = t.as_bytes();
+                let e_bytes = expected_token.as_bytes();
+                t_bytes.len() == e_bytes.len() && bool::from(t_bytes.ct_eq(e_bytes))
+            })
+            .unwrap_or(false);
+
+        if !is_valid {
             tracing::warn!("Unauthorized proxy access attempt to path: {}", path);
             return (
                 StatusCode::UNAUTHORIZED,
@@ -228,15 +253,22 @@ async fn proxy_handler(
 
     let mut req_builder = state.client.request(reqwest_method, &target_url);
 
-    // Forward original headers, except Host
+    // Forward original headers, stripping security-sensitive ones
+    const STRIP_HEADERS: [&str; 6] = [
+        "host", "authorization", "x-proxy-token",
+        "cookie", "x-forwarded-for", "x-real-ip",
+    ];
     for (key, value) in headers.iter() {
-        if key != reqwest::header::HOST {
+        if !STRIP_HEADERS.contains(&key.as_str()) {
             req_builder = req_builder.header(key, value);
         }
     }
 
     // Inject UniFi API Key
     req_builder = req_builder.header("X-API-KEY", &state.api_key);
+
+    // Forward the request body
+    req_builder = req_builder.body(body);
 
     // 5. Send request
     let res = match req_builder.send().await {
@@ -255,9 +287,11 @@ async fn proxy_handler(
     let status = res.status();
     let mut response_builder = Response::builder().status(status.as_u16());
 
-    // 6. Forward essential headers from UniFi response
-    if let Some(content_type) = res.headers().get(reqwest::header::CONTENT_TYPE) {
-        response_builder = response_builder.header(reqwest::header::CONTENT_TYPE, content_type);
+    // 6. Forward response headers (strip only hop-by-hop headers)
+    for (key, value) in res.headers().iter() {
+        if key != "transfer-encoding" && key != "connection" {
+            response_builder = response_builder.header(key, value);
+        }
     }
 
     // 7. Read and return the body
@@ -287,9 +321,15 @@ async fn proxy_handler(
 
 fn check_scope_permission(
     method: &Method,
-    path: &str,
+    raw_path: &str,
     scopes: &PermissionScopes,
 ) -> Result<(), (StatusCode, String)> {
+    // Normalize path by stripping known proxy prefixes
+    let path = raw_path
+        .strip_prefix("/proxy/network/integration")
+        .or_else(|| raw_path.strip_prefix("/proxy/network"))
+        .unwrap_or(raw_path);
+
     // Helper to format forbidden response JSON
     let forbidden = |scope_var: &str| {
         (
@@ -309,7 +349,7 @@ fn check_scope_permission(
     };
 
     // System Info
-    if path == "/v1/info" || path == "/proxy/network/v1/info" {
+    if path == "/v1/info" {
         if method == Method::GET {
             if scopes.info_read {
                 return Ok(());
@@ -323,8 +363,7 @@ fn check_scope_permission(
 
     // Sites
     if path == "/v1/sites"
-        || path == "/proxy/network/v1/sites"
-        || path.starts_with("/v1/sites/") && !path[10..].contains('/')
+        || path.starts_with("/v1/sites/") && path.trim_start_matches("/v1/sites/").find('/').is_none()
     {
         if method == Method::GET {
             if scopes.sites_read {
@@ -415,16 +454,11 @@ fn check_scope_permission(
         }
     }
 
-    // Fallback: If path matches none of the above specific rules, default to GET-only if info_read is on, or block
-    if method == Method::GET {
-        if scopes.info_read {
-            Ok(())
-        } else {
-            Err(forbidden("SCOPE_INFO_READ"))
-        }
-    } else {
-        Err(method_not_allowed())
-    }
+    // Fallback: deny by default — only explicitly matched paths are allowed
+    Err((
+        StatusCode::FORBIDDEN,
+        r#"{"error":"Forbidden","message":"No scope rule matches this endpoint. Access denied by default."}"#.to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -516,5 +550,36 @@ mod tests {
         let scopes_protect = test_scopes(false, false, false, false, false, false, false, false, true);
         assert!(check_scope_permission(&Method::GET, "/v1/cameras", &scopes_protect).is_ok());
         assert!(check_scope_permission(&Method::GET, "/proxy/network/v1/sites", &scopes_protect).is_err());
+    }
+
+    #[test]
+    fn test_deny_by_default_on_unknown_paths() {
+        // All scopes enabled — unknown paths should still be denied
+        let scopes_all = test_scopes(true, true, true, true, true, true, true, true, true);
+        assert!(check_scope_permission(&Method::GET, "/v1/some/future/endpoint", &scopes_all).is_err());
+        assert!(check_scope_permission(&Method::GET, "/v2/new-api", &scopes_all).is_err());
+        assert!(check_scope_permission(&Method::POST, "/v1/admin/settings", &scopes_all).is_err());
+    }
+
+    #[test]
+    fn test_normalized_proxy_integration_prefix() {
+        let scopes = test_scopes(true, true, true, false, false, true, false, false, false);
+
+        // /proxy/network/integration/ prefix → normalized to /v1/...
+        assert!(check_scope_permission(&Method::GET, "/proxy/network/integration/v1/sites", &scopes).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/proxy/network/integration/v1/info", &scopes).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/proxy/network/integration/v1/sites/default/clients", &scopes).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/proxy/network/integration/v1/sites/default/devices", &scopes).is_ok());
+
+        // /proxy/network/ prefix → also normalized
+        assert!(check_scope_permission(&Method::GET, "/proxy/network/v1/sites", &scopes).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/proxy/network/v1/info", &scopes).is_ok());
+
+        // Real-world UUID site ID path
+        assert!(check_scope_permission(
+            &Method::GET,
+            "/proxy/network/integration/v1/sites/88f7af54-98f8-306a-a1c7-c9349722b1f6/clients",
+            &scopes
+        ).is_ok());
     }
 }

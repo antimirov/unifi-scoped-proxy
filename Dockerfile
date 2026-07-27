@@ -24,6 +24,11 @@ EXPOSE 8080
 # Default environment variables
 ENV UNIFI_BASE_URL=https://192.168.1.1
 ENV LISTEN_ADDR=0.0.0.0:8080
-ENV ACCEPT_INVALID_CERTS=true
+# Note: ACCEPT_INVALID_CERTS is intentionally not set here (defaults to false).
+# Most UniFi controllers on local networks use self-signed TLS certificates
+# because valid CA-signed certificates cannot be issued for private IP addresses
+# (e.g. 192.168.x.x). Set ACCEPT_INVALID_CERTS=true in your docker-compose.yml
+# or docker run -e if connecting to a controller via its LAN IP.
+# ENV ACCEPT_INVALID_CERTS=true
 
 CMD ["/app/unifi_scoped_proxy"]
