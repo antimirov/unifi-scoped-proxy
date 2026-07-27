@@ -67,9 +67,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Stitch multi-arch :latest manifest for main pushes
+      - name: Stitch multi-arch :latest manifest dynamically
         if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         run: |
-          docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v0.1.0 || true
+          ARM_DIGEST=$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest --raw | jq -r '.manifests[] | select(.platform.architecture=="arm64") | .digest' 2>/dev/null || true)
+          if [ -n "$ARM_DIGEST" ] && [ "$ARM_DIGEST" != "null" ]; then
+            docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64 \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${ARM_DIGEST}
+          else
+            docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64
+          fi
