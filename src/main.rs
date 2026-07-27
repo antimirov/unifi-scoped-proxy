@@ -426,3 +426,95 @@ fn check_scope_permission(
         Err(method_not_allowed())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_scopes(
+        info: bool,
+        sites: bool,
+        dev_read: bool,
+        dev_ctrl: bool,
+        dev_adopt: bool,
+        cli_read: bool,
+        cli_ctrl: bool,
+        wlan: bool,
+        protect: bool,
+    ) -> PermissionScopes {
+        PermissionScopes {
+            info_read: info,
+            sites_read: sites,
+            devices_read: dev_read,
+            devices_control: dev_ctrl,
+            devices_adopt: dev_adopt,
+            clients_read: cli_read,
+            clients_control: cli_ctrl,
+            wlan_read: wlan,
+            protect_read: protect,
+        }
+    }
+
+    #[test]
+    fn test_info_read_scope() {
+        let scopes = test_scopes(true, false, false, false, false, false, false, false, false);
+        assert!(check_scope_permission(&Method::GET, "/v1/info", &scopes).is_ok());
+
+        let scopes_disabled = test_scopes(false, false, false, false, false, false, false, false, false);
+        assert!(check_scope_permission(&Method::GET, "/v1/info", &scopes_disabled).is_err());
+        assert!(check_scope_permission(&Method::POST, "/v1/info", &scopes).is_err());
+    }
+
+    #[test]
+    fn test_sites_read_scope() {
+        let scopes = test_scopes(false, true, false, false, false, false, false, false, false);
+        assert!(check_scope_permission(&Method::GET, "/v1/sites", &scopes).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/proxy/network/v1/sites", &scopes).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/v1/sites/default", &scopes).is_ok());
+
+        let scopes_disabled = test_scopes(false, false, false, false, false, false, false, false, false);
+        assert!(check_scope_permission(&Method::GET, "/v1/sites", &scopes_disabled).is_err());
+        assert!(check_scope_permission(&Method::POST, "/v1/sites", &scopes).is_err());
+    }
+
+    #[test]
+    fn test_devices_scopes() {
+        // Read test
+        let scopes_read = test_scopes(false, false, true, false, false, false, false, false, false);
+        assert!(check_scope_permission(&Method::GET, "/v1/sites/default/devices", &scopes_read).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/v1/sites/default/devices/dev123", &scopes_read).is_ok());
+        assert!(check_scope_permission(&Method::POST, "/v1/sites/default/devices/dev123/actions", &scopes_read).is_err());
+
+        // Control test
+        let scopes_ctrl = test_scopes(false, false, false, true, false, false, false, false, false);
+        assert!(check_scope_permission(&Method::POST, "/v1/sites/default/devices/dev123/actions", &scopes_ctrl).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/v1/sites/default/devices", &scopes_ctrl).is_err());
+
+        // Adopt test
+        let scopes_adopt = test_scopes(false, false, false, false, true, false, false, false, false);
+        assert!(check_scope_permission(&Method::POST, "/v1/sites/default/devices", &scopes_adopt).is_ok());
+    }
+
+    #[test]
+    fn test_clients_scopes() {
+        // Read test
+        let scopes_read = test_scopes(false, false, false, false, false, true, false, false, false);
+        assert!(check_scope_permission(&Method::GET, "/v1/sites/default/clients", &scopes_read).is_ok());
+        assert!(check_scope_permission(&Method::POST, "/v1/sites/default/clients/cli123/actions", &scopes_read).is_err());
+
+        // Control test
+        let scopes_ctrl = test_scopes(false, false, false, false, false, false, true, false, false);
+        assert!(check_scope_permission(&Method::POST, "/v1/sites/default/clients/cli123/actions", &scopes_ctrl).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/v1/sites/default/clients", &scopes_ctrl).is_err());
+    }
+
+    #[test]
+    fn test_wlan_and_protect_scopes() {
+        let scopes_wlan = test_scopes(false, false, false, false, false, false, false, true, false);
+        assert!(check_scope_permission(&Method::GET, "/v1/sites/default/wlans", &scopes_wlan).is_ok());
+
+        let scopes_protect = test_scopes(false, false, false, false, false, false, false, false, true);
+        assert!(check_scope_permission(&Method::GET, "/v1/cameras", &scopes_protect).is_ok());
+        assert!(check_scope_permission(&Method::GET, "/proxy/network/v1/sites", &scopes_protect).is_err());
+    }
+}
